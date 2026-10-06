@@ -1,10 +1,13 @@
-```python
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from datetime import datetime, timedelta
+
+# =========================================================
+# PAGE CONFIGURATION
+# =========================================================
 
 st.set_page_config(
     page_title="Indian Stock Analyzer",
@@ -15,9 +18,9 @@ st.set_page_config(
 st.title("📈 Indian Stock Analyzer")
 st.caption("NSE & BSE Technical Analysis Dashboard")
 
-# ---------------------------------------------------------
+# =========================================================
 # USER INPUT
-# ---------------------------------------------------------
+# =========================================================
 
 market = st.selectbox(
     "Choose Market",
@@ -39,20 +42,21 @@ end_date = st.date_input(
     value=datetime.today()
 )
 
-# ---------------------------------------------------------
+# =========================================================
 # VALIDATE DATES
-# ---------------------------------------------------------
+# =========================================================
 
 if start_date >= end_date:
     st.error("Start Date must be before End Date.")
     st.stop()
 
-# ---------------------------------------------------------
-# RUN ANALYSIS
-# ---------------------------------------------------------
+# =========================================================
+# STOCK ANALYSIS
+# =========================================================
 
 if symbol:
 
+    # Create Yahoo Finance ticker
     if market == "NSE":
         ticker = f"{symbol}.NS"
     else:
@@ -62,12 +66,11 @@ if symbol:
         f"Fetching {ticker} data from {start_date} to {end_date}..."
     )
 
-    # -----------------------------------------------------
-    # DOWNLOAD YAHOO FINANCE DATA
-    # -----------------------------------------------------
+    # =====================================================
+    # DOWNLOAD DATA
+    # =====================================================
 
     try:
-
         download_end = end_date + timedelta(days=1)
 
         data = yf.download(
@@ -79,40 +82,30 @@ if symbol:
         )
 
     except Exception as e:
-
-        st.error(
-            f"Unable to download stock data: {e}"
-        )
+        st.error(f"Unable to download stock data: {e}")
         st.stop()
 
-    # -----------------------------------------------------
+    # =====================================================
     # CHECK DATA
-    # -----------------------------------------------------
+    # =====================================================
 
     if data.empty:
-
         st.error(
-            f"No data found for {ticker}."
+            f"No data found for {ticker}. "
+            "Please check the stock symbol and market."
         )
-
-        st.info(
-            "Please check the stock symbol. "
-            "For example, use RELIANCE instead of Reliance Industries."
-        )
-
         st.stop()
 
-    # -----------------------------------------------------
-    # HANDLE YFINANCE MULTIINDEX
-    # -----------------------------------------------------
+    # =====================================================
+    # HANDLE YFINANCE MULTI-INDEX COLUMNS
+    # =====================================================
 
     if isinstance(data.columns, pd.MultiIndex):
-
         data.columns = data.columns.get_level_values(0)
 
-    # -----------------------------------------------------
+    # =====================================================
     # CHECK REQUIRED COLUMNS
-    # -----------------------------------------------------
+    # =====================================================
 
     required_columns = [
         "Open",
@@ -122,24 +115,25 @@ if symbol:
         "Volume"
     ]
 
-    for column in required_columns:
+    missing_columns = [
+        column
+        for column in required_columns
+        if column not in data.columns
+    ]
 
-        if column not in data.columns:
+    if missing_columns:
+        st.error(
+            f"Missing required columns: {missing_columns}"
+        )
+        st.stop()
 
-            st.error(
-                f"Required column '{column}' was not found."
-            )
-
-            st.stop()
-
-    # -----------------------------------------------------
-    # CLEAN PRICE DATA
-    # -----------------------------------------------------
+    # =====================================================
+    # CLEAN CLOSE PRICE
+    # =====================================================
 
     close = data["Close"]
 
     if isinstance(close, pd.DataFrame):
-
         close = close.iloc[:, 0]
 
     close = pd.to_numeric(
@@ -149,9 +143,9 @@ if symbol:
 
     data["Close"] = close
 
-    # -----------------------------------------------------
+    # =====================================================
     # MOVING AVERAGES
-    # -----------------------------------------------------
+    # =====================================================
 
     data["MA20"] = (
         close
@@ -165,14 +159,13 @@ if symbol:
         .mean()
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # RSI
-    # -----------------------------------------------------
+    # =====================================================
 
     delta = close.diff()
 
     gain = delta.clip(lower=0)
-
     loss = -delta.clip(upper=0)
 
     avg_gain = (
@@ -188,7 +181,7 @@ if symbol:
     )
 
     # Avoid division by zero
-    avg_loss = avg_loss.replace(0, pd.NA)
+    avg_loss = avg_loss.replace(0, float("nan"))
 
     rs = avg_gain / avg_loss
 
@@ -196,9 +189,9 @@ if symbol:
         100 - (100 / (1 + rs))
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # MACD
-    # -----------------------------------------------------
+    # =====================================================
 
     ema12 = close.ewm(
         span=12,
@@ -221,9 +214,9 @@ if symbol:
         .mean()
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # BOLLINGER BANDS
-    # -----------------------------------------------------
+    # =====================================================
 
     data["BB_Middle"] = (
         close
@@ -247,16 +240,15 @@ if symbol:
         - (2 * rolling_std)
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # RESET INDEX
-    # -----------------------------------------------------
+    # =====================================================
 
     data = data.reset_index()
 
     if "Date" not in data.columns:
 
         if "Datetime" in data.columns:
-
             data.rename(
                 columns={
                     "Datetime": "Date"
@@ -268,9 +260,9 @@ if symbol:
         data["Date"]
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # LINEAR REGRESSION TREND
-    # -----------------------------------------------------
+    # =====================================================
 
     data["Date_ordinal"] = (
         data["Date"]
@@ -284,51 +276,41 @@ if symbol:
         ]
     ].copy()
 
-    regression_data = regression_data.replace(
-        [float("inf"), float("-inf")],
-        pd.NA
-    )
-
     regression_data = regression_data.dropna()
 
     if len(regression_data) >= 2:
 
-        trend_model = LinearRegression()
+        model = LinearRegression()
 
-        trend_model.fit(
+        model.fit(
             regression_data[["Date_ordinal"]],
             regression_data["Close"]
         )
 
-        data["Trend"] = trend_model.predict(
+        data["Trend"] = model.predict(
             data[["Date_ordinal"]]
         )
 
     else:
+        data["Trend"] = float("nan")
 
-        data["Trend"] = pd.NA
-
-    # -----------------------------------------------------
+    # =====================================================
     # CURRENT PRICE
-    # -----------------------------------------------------
+    # =====================================================
 
     valid_close = data["Close"].dropna()
 
     if len(valid_close) == 0:
-
-        st.error(
-            "No valid closing price data was found."
-        )
-
+        st.error("No valid closing price data found.")
         st.stop()
 
     current_price = float(
         valid_close.iloc[-1]
     )
 
-    # -----------------------------------------------------
-    # DAILY CHANGE
-    # -----------------------------------------------------
+    # =====================================================
+    # DAILY PRICE CHANGE
+    # =====================================================
 
     if len(valid_close) >= 2:
 
@@ -352,37 +334,35 @@ if symbol:
         price_change = 0
         price_change_pct = 0
 
-    # -----------------------------------------------------
-    # LATEST INDICATORS
-    # -----------------------------------------------------
+    # =====================================================
+    # LATEST RSI
+    # =====================================================
 
     rsi_values = data["RSI"].dropna()
 
-    macd_values = data["MACD"].dropna()
-
     if len(rsi_values) > 0:
-
         latest_rsi = float(
             rsi_values.iloc[-1]
         )
-
     else:
-
         latest_rsi = 0
 
-    if len(macd_values) > 0:
+    # =====================================================
+    # LATEST MACD
+    # =====================================================
 
+    macd_values = data["MACD"].dropna()
+
+    if len(macd_values) > 0:
         latest_macd = float(
             macd_values.iloc[-1]
         )
-
     else:
-
         latest_macd = 0
 
-    # -----------------------------------------------------
+    # =====================================================
     # SUMMARY
-    # -----------------------------------------------------
+    # =====================================================
 
     st.subheader(
         f"📊 {symbol} — {market}"
@@ -391,14 +371,12 @@ if symbol:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-
         st.metric(
             "Current Price",
             f"₹{current_price:,.2f}"
         )
 
     with col2:
-
         st.metric(
             "Daily Change",
             f"₹{price_change:,.2f}",
@@ -406,22 +384,20 @@ if symbol:
         )
 
     with col3:
-
         st.metric(
             "RSI",
             f"{latest_rsi:.2f}"
         )
 
     with col4:
-
         st.metric(
             "MACD",
             f"{latest_macd:.2f}"
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # PRICE + MOVING AVERAGES
-    # -----------------------------------------------------
+    # =====================================================
 
     st.subheader(
         "📊 Stock Price & Moving Averages"
@@ -463,9 +439,9 @@ if symbol:
 
     plt.close(fig1)
 
-    # -----------------------------------------------------
+    # =====================================================
     # TREND LINE
-    # -----------------------------------------------------
+    # =====================================================
 
     st.subheader(
         "📈 Trend Line"
@@ -502,9 +478,9 @@ if symbol:
 
     plt.close(fig2)
 
-    # -----------------------------------------------------
+    # =====================================================
     # RSI
-    # -----------------------------------------------------
+    # =====================================================
 
     st.subheader(
         "🌀 Relative Strength Index (RSI)"
@@ -548,9 +524,9 @@ if symbol:
 
     plt.close(fig3)
 
-    # -----------------------------------------------------
+    # =====================================================
     # MACD
-    # -----------------------------------------------------
+    # =====================================================
 
     st.subheader(
         "📉 MACD"
@@ -588,9 +564,9 @@ if symbol:
 
     plt.close(fig4)
 
-    # -----------------------------------------------------
+    # =====================================================
     # BOLLINGER BANDS
-    # -----------------------------------------------------
+    # =====================================================
 
     st.subheader(
         "📌 Bollinger Bands"
@@ -637,9 +613,9 @@ if symbol:
 
     plt.close(fig5)
 
-    # -----------------------------------------------------
-    # LATEST DATA
-    # -----------------------------------------------------
+    # =====================================================
+    # LATEST DATA TABLE
+    # =====================================================
 
     st.subheader(
         "📋 Latest Market Data"
@@ -675,9 +651,9 @@ if symbol:
         hide_index=True
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # DOWNLOAD CSV
-    # -----------------------------------------------------
+    # =====================================================
 
     st.subheader(
         "📁 Export Data"
@@ -696,6 +672,10 @@ if symbol:
         mime="text/csv"
     )
 
+    # =====================================================
+    # FOOTER
+    # =====================================================
+
     st.success(
         "Analysis completed successfully."
     )
@@ -704,34 +684,3 @@ if symbol:
         "⚠️ This tool provides technical analysis for "
         "informational purposes only and is not financial advice."
     )
-```
-
-### Very important
-
-When you paste this into GitHub:
-
-- **First line must be:** `import streamlit as st`
-- Do **not** include ` ```python`
-- Do **not** include the final ` ````
-- Replace the **entire existing file**, not just part of it.
-- Commit the changes.
-
-Your `requirements.txt` should contain:
-
-:::writing{variant="document" id="31684" title="requirements.txt"}
-```text
-streamlit
-yfinance
-pandas
-matplotlib
-scikit-learn
-numpy
-```
-
-After Streamlit redeploys, test with:
-
-**Market:** NSE  
-**Symbol:** `RELIANCE`  
-**Start:** 2020-01-01
-
-Once that loads successfully, we can add the **stock prediction/AI layer** separately so we don't break the working analyzer.
