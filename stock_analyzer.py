@@ -1,13 +1,16 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
+
+from sklearn.ensemble import RandomForestRegressor
 from datetime import datetime, timedelta
 
-# =========================================================
+
+# ============================================================
 # PAGE CONFIGURATION
-# =========================================================
+# ============================================================
 
 st.set_page_config(
     page_title="Indian Stock Analyzer",
@@ -15,193 +18,141 @@ st.set_page_config(
     layout="wide"
 )
 
+
+# ============================================================
+# TITLE
+# ============================================================
+
 st.title("📈 Indian Stock Analyzer")
-st.caption("NSE & BSE Technical Analysis Dashboard")
+st.caption(
+    "Technical analysis + machine learning stock prediction"
+)
 
-# =========================================================
-# USER INPUT
-# =========================================================
 
-market = st.selectbox(
-    "Choose Market",
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.header("⚙️ Analysis Settings")
+
+market = st.sidebar.selectbox(
+    "Market",
     ["NSE", "BSE"]
 )
 
-symbol = st.text_input(
-    "Enter Stock Symbol",
-    placeholder="Example: RELIANCE, TCS, INFY, HDFCBANK"
-).upper().strip()
+symbol = st.sidebar.text_input(
+    "Stock Symbol",
+    value="RELIANCE"
+).strip().upper()
 
-start_date = st.date_input(
-    "Start Date",
-    value=pd.to_datetime("2020-01-01")
+start_date = st.sidebar.date_input(
+    "Historical Start Date",
+    value=datetime(2020, 1, 1)
 )
 
-end_date = st.date_input(
-    "End Date",
+end_date = st.sidebar.date_input(
+    "Historical End Date",
     value=datetime.today()
 )
 
-# =========================================================
-# VALIDATE DATES
-# =========================================================
+run_analysis = st.sidebar.button(
+    "🔍 Analyze Stock",
+    type="primary"
+)
 
-if start_date >= end_date:
-    st.error("Start Date must be before End Date.")
-    st.stop()
 
-# =========================================================
-# STOCK ANALYSIS
-# =========================================================
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
 
-if symbol:
+def flatten_yfinance_columns(df):
+    """
+    Handles the newer yfinance MultiIndex format.
+    """
 
-    # Create Yahoo Finance ticker
-    if market == "NSE":
-        ticker = f"{symbol}.NS"
-    else:
-        ticker = f"{symbol}.BO"
+    if isinstance(df.columns, pd.MultiIndex):
 
-    st.info(
-        f"Fetching {ticker} data from {start_date} to {end_date}..."
-    )
+        # If columns look like:
+        # ('Close', 'RELIANCE.NS')
+        # ('Open', 'RELIANCE.NS')
+        #
+        # keep the first level.
 
-    # =====================================================
-    # DOWNLOAD DATA
-    # =====================================================
+        df.columns = [
+            col[0] if isinstance(col, tuple) else col
+            for col in df.columns
+        ]
 
-    try:
-        download_end = end_date + timedelta(days=1)
+    return df
 
-        data = yf.download(
-            ticker,
-            start=start_date,
-            end=download_end,
-            auto_adjust=True,
-            progress=False
-        )
 
-    except Exception as e:
-        st.error(f"Unable to download stock data: {e}")
-        st.stop()
+def calculate_rsi(series, period=14):
 
-    # =====================================================
-    # CHECK DATA
-    # =====================================================
-
-    if data.empty:
-        st.error(
-            f"No data found for {ticker}. "
-            "Please check the stock symbol and market."
-        )
-        st.stop()
-
-    # =====================================================
-    # HANDLE YFINANCE MULTI-INDEX COLUMNS
-    # =====================================================
-
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0)
-
-    # =====================================================
-    # CHECK REQUIRED COLUMNS
-    # =====================================================
-
-    required_columns = [
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume"
-    ]
-
-    missing_columns = [
-        column
-        for column in required_columns
-        if column not in data.columns
-    ]
-
-    if missing_columns:
-        st.error(
-            f"Missing required columns: {missing_columns}"
-        )
-        st.stop()
-
-    # =====================================================
-    # CLEAN CLOSE PRICE
-    # =====================================================
-
-    close = data["Close"]
-
-    if isinstance(close, pd.DataFrame):
-        close = close.iloc[:, 0]
-
-    close = pd.to_numeric(
-        close,
-        errors="coerce"
-    )
-
-    data["Close"] = close
-
-    # =====================================================
-    # MOVING AVERAGES
-    # =====================================================
-
-    data["MA20"] = (
-        close
-        .rolling(window=20)
-        .mean()
-    )
-
-    data["MA50"] = (
-        close
-        .rolling(window=50)
-        .mean()
-    )
-
-    # =====================================================
-    # RSI
-    # =====================================================
-
-    delta = close.diff()
+    delta = series.diff()
 
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = (
-        gain
-        .rolling(window=14)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+
+def calculate_indicators(data):
+
+    data = data.copy()
+
+    # --------------------------------------------------------
+    # Moving averages
+    # --------------------------------------------------------
+
+    data["MA20"] = (
+        data["Close"]
+        .rolling(20)
         .mean()
     )
 
-    avg_loss = (
-        loss
-        .rolling(window=14)
+    data["MA50"] = (
+        data["Close"]
+        .rolling(50)
         .mean()
     )
 
-    # Avoid division by zero
-    avg_loss = avg_loss.replace(0, float("nan"))
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
 
-    rs = avg_gain / avg_loss
-
-    data["RSI"] = (
-        100 - (100 / (1 + rs))
+    data["RSI"] = calculate_rsi(
+        data["Close"],
+        14
     )
 
-    # =====================================================
+    # --------------------------------------------------------
     # MACD
-    # =====================================================
+    # --------------------------------------------------------
 
-    ema12 = close.ewm(
-        span=12,
-        adjust=False
-    ).mean()
+    ema12 = (
+        data["Close"]
+        .ewm(
+            span=12,
+            adjust=False
+        )
+        .mean()
+    )
 
-    ema26 = close.ewm(
-        span=26,
-        adjust=False
-    ).mean()
+    ema26 = (
+        data["Close"]
+        .ewm(
+            span=26,
+            adjust=False
+        )
+        .mean()
+    )
 
     data["MACD"] = ema12 - ema26
 
@@ -214,284 +165,989 @@ if symbol:
         .mean()
     )
 
-    # =====================================================
-    # BOLLINGER BANDS
-    # =====================================================
+    data["MACD_Histogram"] = (
+        data["MACD"] -
+        data["Signal"]
+    )
+
+    # --------------------------------------------------------
+    # Bollinger Bands
+    # --------------------------------------------------------
 
     data["BB_Middle"] = (
-        close
-        .rolling(window=20)
+        data["Close"]
+        .rolling(20)
         .mean()
     )
 
-    rolling_std = (
-        close
-        .rolling(window=20)
+    bb_std = (
+        data["Close"]
+        .rolling(20)
         .std()
     )
 
     data["BB_Upper"] = (
-        data["BB_Middle"]
-        + (2 * rolling_std)
+        data["BB_Middle"] +
+        2 * bb_std
     )
 
     data["BB_Lower"] = (
-        data["BB_Middle"]
-        - (2 * rolling_std)
+        data["BB_Middle"] -
+        2 * bb_std
     )
 
-    # =====================================================
-    # RESET INDEX
-    # =====================================================
+    # --------------------------------------------------------
+    # Daily return
+    # --------------------------------------------------------
 
-    data = data.reset_index()
+    data["Daily_Return"] = (
+        data["Close"].pct_change()
+    )
 
-    if "Date" not in data.columns:
+    # --------------------------------------------------------
+    # Volatility
+    # --------------------------------------------------------
 
-        if "Datetime" in data.columns:
-            data.rename(
-                columns={
-                    "Datetime": "Date"
-                },
-                inplace=True
+    data["Volatility"] = (
+        data["Daily_Return"]
+        .rolling(20)
+        .std()
+    )
+
+    # --------------------------------------------------------
+    # Price momentum
+    # --------------------------------------------------------
+
+    data["Momentum_5"] = (
+        data["Close"].pct_change(5)
+    )
+
+    data["Momentum_20"] = (
+        data["Close"].pct_change(20)
+    )
+
+    return data
+
+
+def train_prediction_model(data):
+
+    model_data = data.copy()
+
+    # --------------------------------------------------------
+    # Features
+    # --------------------------------------------------------
+
+    features = [
+        "Close",
+        "Volume",
+        "MA20",
+        "MA50",
+        "RSI",
+        "MACD",
+        "Signal",
+        "MACD_Histogram",
+        "BB_Middle",
+        "BB_Upper",
+        "BB_Lower",
+        "Volatility",
+        "Momentum_5",
+        "Momentum_20"
+    ]
+
+    # Target = next day's closing price
+
+    model_data["Target"] = (
+        model_data["Close"].shift(-1)
+    )
+
+    model_data = model_data.dropna(
+        subset=features + ["Target"]
+    )
+
+    if len(model_data) < 150:
+
+        return None, None, None, None
+
+    X = model_data[features]
+    y = model_data["Target"]
+
+    # --------------------------------------------------------
+    # Train / validation split
+    # --------------------------------------------------------
+
+    split = int(
+        len(model_data) * 0.80
+    )
+
+    X_train = X.iloc[:split]
+    y_train = y.iloc[:split]
+
+    X_test = X.iloc[split:]
+    y_test = y.iloc[split:]
+
+    # --------------------------------------------------------
+    # Random Forest
+    # --------------------------------------------------------
+
+    model = RandomForestRegressor(
+        n_estimators=200,
+        max_depth=10,
+        min_samples_leaf=3,
+        random_state=42,
+        n_jobs=-1
+    )
+
+    model.fit(
+        X_train,
+        y_train
+    )
+
+    # --------------------------------------------------------
+    # Validation score
+    # --------------------------------------------------------
+
+    if len(X_test) > 0:
+
+        predictions = model.predict(X_test)
+
+        mae = np.mean(
+            np.abs(
+                predictions -
+                y_test.values
+            )
+        )
+
+        actual_mean = np.mean(
+            np.abs(y_test.values)
+        )
+
+        if actual_mean > 0:
+
+            accuracy = max(
+                0,
+                100 -
+                (mae / actual_mean * 100)
             )
 
-    data["Date"] = pd.to_datetime(
-        data["Date"]
-    )
+        else:
 
-    # =====================================================
-    # LINEAR REGRESSION TREND
-    # =====================================================
-
-    data["Date_ordinal"] = (
-        data["Date"]
-        .map(datetime.toordinal)
-    )
-
-    regression_data = data[
-        [
-            "Date_ordinal",
-            "Close"
-        ]
-    ].copy()
-
-    regression_data = regression_data.dropna()
-
-    if len(regression_data) >= 2:
-
-        model = LinearRegression()
-
-        model.fit(
-            regression_data[["Date_ordinal"]],
-            regression_data["Close"]
-        )
-
-        data["Trend"] = model.predict(
-            data[["Date_ordinal"]]
-        )
+            accuracy = 0
 
     else:
-        data["Trend"] = float("nan")
 
-    # =====================================================
-    # CURRENT PRICE
-    # =====================================================
+        accuracy = 0
 
-    valid_close = data["Close"].dropna()
+    # --------------------------------------------------------
+    # Latest prediction
+    # --------------------------------------------------------
 
-    if len(valid_close) == 0:
-        st.error("No valid closing price data found.")
-        st.stop()
+    latest_row = data.dropna(
+        subset=features
+    ).iloc[-1:]
+
+    X_latest = latest_row[features]
+
+    tree_predictions = np.array(
+        [
+            tree.predict(X_latest)[0]
+            for tree in model.estimators_
+        ]
+    )
+
+    predicted_price = float(
+        np.mean(tree_predictions)
+    )
+
+    prediction_std = float(
+        np.std(tree_predictions)
+    )
+
+    return (
+        model,
+        predicted_price,
+        prediction_std,
+        accuracy
+    )
+
+
+def calculate_signal(
+    data,
+    predicted_price
+):
+
+    latest = data.iloc[-1]
 
     current_price = float(
-        valid_close.iloc[-1]
+        latest["Close"]
     )
 
-    # =====================================================
-    # DAILY PRICE CHANGE
-    # =====================================================
+    ma20 = float(
+        latest["MA20"]
+    )
 
-    if len(valid_close) >= 2:
+    ma50 = float(
+        latest["MA50"]
+    )
 
-        previous_price = float(
-            valid_close.iloc[-2]
-        )
+    rsi = float(
+        latest["RSI"]
+    )
 
-        price_change = (
-            current_price
-            - previous_price
-        )
+    macd = float(
+        latest["MACD"]
+    )
 
-        price_change_pct = (
-            price_change
-            / previous_price
-            * 100
+    signal = float(
+        latest["Signal"]
+    )
+
+    bb_upper = float(
+        latest["BB_Upper"]
+    )
+
+    bb_lower = float(
+        latest["BB_Lower"]
+    )
+
+    score = 0
+
+    reasons = []
+
+    # ========================================================
+    # MOVING AVERAGE
+    # ========================================================
+
+    if ma20 > ma50:
+
+        score += 1
+
+        reasons.append(
+            "MA20 is above MA50 — bullish trend."
         )
 
     else:
 
-        price_change = 0
-        price_change_pct = 0
+        score -= 1
 
-    # =====================================================
-    # LATEST RSI
-    # =====================================================
-
-    rsi_values = data["RSI"].dropna()
-
-    if len(rsi_values) > 0:
-        latest_rsi = float(
-            rsi_values.iloc[-1]
+        reasons.append(
+            "MA20 is below MA50 — bearish trend."
         )
-    else:
-        latest_rsi = 0
 
-    # =====================================================
-    # LATEST MACD
-    # =====================================================
+    # ========================================================
+    # RSI
+    # ========================================================
 
-    macd_values = data["MACD"].dropna()
+    if rsi < 30:
 
-    if len(macd_values) > 0:
-        latest_macd = float(
-            macd_values.iloc[-1]
+        score += 2
+
+        reasons.append(
+            "RSI is below 30 — potentially oversold."
         )
-    else:
-        latest_macd = 0
 
-    # =====================================================
-    # SUMMARY
-    # =====================================================
+    elif rsi > 70:
+
+        score -= 2
+
+        reasons.append(
+            "RSI is above 70 — potentially overbought."
+        )
+
+    elif rsi >= 50:
+
+        score += 1
+
+        reasons.append(
+            "RSI is above 50 — positive momentum."
+        )
+
+    else:
+
+        score -= 1
+
+        reasons.append(
+            "RSI is below 50 — weaker momentum."
+        )
+
+    # ========================================================
+    # MACD
+    # ========================================================
+
+    if macd > signal:
+
+        score += 1
+
+        reasons.append(
+            "MACD is above its signal line."
+        )
+
+    else:
+
+        score -= 1
+
+        reasons.append(
+            "MACD is below its signal line."
+        )
+
+    # ========================================================
+    # BOLLINGER BANDS
+    # ========================================================
+
+    if current_price <= bb_lower:
+
+        score += 1
+
+        reasons.append(
+            "Price is near/below the lower Bollinger Band."
+        )
+
+    elif current_price >= bb_upper:
+
+        score -= 1
+
+        reasons.append(
+            "Price is near/above the upper Bollinger Band."
+        )
+
+    # ========================================================
+    # MACHINE LEARNING PREDICTION
+    # ========================================================
+
+    if predicted_price > current_price:
+
+        score += 2
+
+        reasons.append(
+            "ML model predicts a higher next-day price."
+        )
+
+    else:
+
+        score -= 2
+
+        reasons.append(
+            "ML model predicts a lower next-day price."
+        )
+
+    # ========================================================
+    # FINAL SIGNAL
+    # ========================================================
+
+    if score >= 4:
+
+        recommendation = "🟢 STRONG BUY"
+
+    elif score >= 2:
+
+        recommendation = "🟢 BUY"
+
+    elif score <= -4:
+
+        recommendation = "🔴 STRONG SELL"
+
+    elif score <= -2:
+
+        recommendation = "🔴 SELL"
+
+    else:
+
+        recommendation = "🟡 HOLD"
+
+    return (
+        recommendation,
+        score,
+        reasons
+    )
+
+
+def calculate_levels(data):
+
+    latest = data.iloc[-1]
+
+    current_price = float(
+        latest["Close"]
+    )
+
+    # Recent support
+
+    recent = data.tail(60)
+
+    support = float(
+        recent["Low"].min()
+    )
+
+    resistance = float(
+        recent["High"].max()
+    )
+
+    # ATR-like volatility calculation
+
+    data = data.copy()
+
+    data["TR"] = np.maximum(
+        data["High"] - data["Low"],
+        np.maximum(
+            abs(
+                data["High"] -
+                data["Close"].shift(1)
+            ),
+            abs(
+                data["Low"] -
+                data["Close"].shift(1)
+            )
+        )
+    )
+
+    atr = float(
+        data["TR"]
+        .rolling(14)
+        .mean()
+        .iloc[-1]
+    )
+
+    if np.isnan(atr) or atr <= 0:
+
+        atr = current_price * 0.02
+
+    # --------------------------------------------------------
+    # Stop loss
+    # --------------------------------------------------------
+
+    stop_loss = max(
+        support,
+        current_price - (1.5 * atr)
+    )
+
+    # --------------------------------------------------------
+    # Targets
+    # --------------------------------------------------------
+
+    target1 = current_price + (
+        1.5 * atr
+    )
+
+    target2 = current_price + (
+        3 * atr
+    )
+
+    return (
+        support,
+        resistance,
+        stop_loss,
+        target1,
+        target2,
+        atr
+    )
+
+
+# ============================================================
+# MAIN APPLICATION
+# ============================================================
+
+if run_analysis or symbol:
+
+    if not symbol:
+
+        st.warning(
+            "Please enter a stock symbol."
+        )
+
+        st.stop()
+
+    if start_date >= end_date:
+
+        st.error(
+            "Start date must be before end date."
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # Ticker
+    # --------------------------------------------------------
+
+    ticker = (
+        f"{symbol}.NS"
+        if market == "NSE"
+        else f"{symbol}.BO"
+    )
+
+    st.info(
+        f"Fetching {ticker} historical data..."
+    )
+
+    # --------------------------------------------------------
+    # Download data
+    # --------------------------------------------------------
+
+    try:
+
+        data = yf.download(
+            ticker,
+            start=start_date,
+            end=end_date + timedelta(days=1),
+            auto_adjust=False,
+            progress=False
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"Unable to download stock data: {e}"
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # Fix yfinance columns
+    # --------------------------------------------------------
+
+    data = flatten_yfinance_columns(
+        data
+    )
+
+    # --------------------------------------------------------
+    # Validate
+    # --------------------------------------------------------
+
+    required_columns = [
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume"
+    ]
+
+    missing = [
+        col
+        for col in required_columns
+        if col not in data.columns
+    ]
+
+    if missing:
+
+        st.error(
+            f"Missing columns from Yahoo Finance: {missing}"
+        )
+
+        st.stop()
+
+    if data.empty:
+
+        st.error(
+            f"No data found for {ticker}. "
+            "Check the symbol and market."
+        )
+
+        st.stop()
+
+    # --------------------------------------------------------
+    # Convert numeric columns
+    # --------------------------------------------------------
+
+    for col in required_columns:
+
+        data[col] = pd.to_numeric(
+            data[col],
+            errors="coerce"
+        )
+
+    data = data.dropna(
+        subset=required_columns
+    )
+
+    # --------------------------------------------------------
+    # Indicators
+    # --------------------------------------------------------
+
+    data = calculate_indicators(
+        data
+    )
+
+    # --------------------------------------------------------
+    # Need enough history
+    # --------------------------------------------------------
+
+    if len(data) < 100:
+
+        st.error(
+            "Not enough historical data for analysis. "
+            "Please select an earlier start date."
+        )
+
+        st.stop()
+
+    # ========================================================
+    # MACHINE LEARNING
+    # ========================================================
+
+    with st.spinner(
+        "🤖 Training prediction model..."
+    ):
+
+        (
+            model,
+            predicted_price,
+            prediction_std,
+            model_accuracy
+        ) = train_prediction_model(
+            data
+        )
+
+    if model is None:
+
+        st.error(
+            "Not enough data to train the prediction model."
+        )
+
+        st.stop()
+
+    # ========================================================
+    # CURRENT VALUES
+    # ========================================================
+
+    latest = data.iloc[-1]
+
+    current_price = float(
+        latest["Close"]
+    )
+
+    rsi = float(
+        latest["RSI"]
+    )
+
+    ma20 = float(
+        latest["MA20"]
+    )
+
+    ma50 = float(
+        latest["MA50"]
+    )
+
+    macd = float(
+        latest["MACD"]
+    )
+
+    macd_signal = float(
+        latest["Signal"]
+    )
+
+    # ========================================================
+    # SIGNAL
+    # ========================================================
+
+    (
+        recommendation,
+        score,
+        reasons
+    ) = calculate_signal(
+        data,
+        predicted_price
+    )
+
+    # ========================================================
+    # SUPPORT / RESISTANCE / TARGETS
+    # ========================================================
+
+    (
+        support,
+        resistance,
+        stop_loss,
+        target1,
+        target2,
+        atr
+    ) = calculate_levels(
+        data
+    )
+
+    # ========================================================
+    # UPSIDE
+    # ========================================================
+
+    expected_change = (
+        (predicted_price - current_price)
+        / current_price
+    ) * 100
+
+    # ========================================================
+    # HEADER
+    # ========================================================
+
+    st.success(
+        f"Analysis completed for {symbol} ({market})"
+    )
 
     st.subheader(
         f"📊 {symbol} — {market}"
     )
 
-    col1, col2, col3, col4 = st.columns(4)
+    # ========================================================
+    # MAIN METRICS
+    # ========================================================
 
-    with col1:
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    with c1:
+
         st.metric(
             "Current Price",
             f"₹{current_price:,.2f}"
         )
 
-    with col2:
+    with c2:
+
         st.metric(
-            "Daily Change",
-            f"₹{price_change:,.2f}",
-            f"{price_change_pct:.2f}%"
+            "ML Next-Day Prediction",
+            f"₹{predicted_price:,.2f}",
+            f"{expected_change:+.2f}%"
         )
 
-    with col3:
+    with c3:
+
         st.metric(
-            "RSI",
-            f"{latest_rsi:.2f}"
+            "Technical Signal",
+            recommendation
         )
 
-    with col4:
+    with c4:
+
         st.metric(
-            "MACD",
-            f"{latest_macd:.2f}"
+            "Signal Score",
+            f"{score:+d}"
         )
 
-    # =====================================================
-    # PRICE + MOVING AVERAGES
-    # =====================================================
+    with c5:
+
+        st.metric(
+            "Model Confidence",
+            f"{model_accuracy:.1f}%"
+        )
+
+    # ========================================================
+    # TRADING LEVELS
+    # ========================================================
 
     st.subheader(
-        "📊 Stock Price & Moving Averages"
+        "🎯 Trading Levels"
+    )
+
+    l1, l2, l3, l4, l5 = st.columns(5)
+
+    with l1:
+
+        st.metric(
+            "Support",
+            f"₹{support:,.2f}"
+        )
+
+    with l2:
+
+        st.metric(
+            "Resistance",
+            f"₹{resistance:,.2f}"
+        )
+
+    with l3:
+
+        st.metric(
+            "Stop Loss",
+            f"₹{stop_loss:,.2f}"
+        )
+
+    with l4:
+
+        st.metric(
+            "Target 1",
+            f"₹{target1:,.2f}"
+        )
+
+    with l5:
+
+        st.metric(
+            "Target 2",
+            f"₹{target2:,.2f}"
+        )
+
+    # ========================================================
+    # SIGNAL EXPLANATION
+    # ========================================================
+
+    st.subheader(
+        "🧠 Why is the app giving this signal?"
+    )
+
+    for reason in reasons:
+
+        st.write(
+            f"• {reason}"
+        )
+
+    # ========================================================
+    # TECHNICAL INDICATORS
+    # ========================================================
+
+    st.subheader(
+        "📊 Technical Indicators"
+    )
+
+    t1, t2, t3, t4 = st.columns(4)
+
+    with t1:
+
+        st.metric(
+            "RSI",
+            f"{rsi:.2f}"
+        )
+
+    with t2:
+
+        st.metric(
+            "MA20",
+            f"₹{ma20:,.2f}"
+        )
+
+    with t3:
+
+        st.metric(
+            "MA50",
+            f"₹{ma50:,.2f}"
+        )
+
+    with t4:
+
+        macd_status = (
+            "Bullish"
+            if macd > macd_signal
+            else "Bearish"
+        )
+
+        st.metric(
+            "MACD",
+            macd_status
+        )
+
+    # ========================================================
+    # PRICE CHART
+    # ========================================================
+
+    st.subheader(
+        "📈 Price & Moving Averages"
     )
 
     fig1, ax1 = plt.subplots(
-        figsize=(12, 5)
+        figsize=(14, 6)
     )
 
     ax1.plot(
-        data["Date"],
+        data.index,
         data["Close"],
-        label="Close Price"
+        label="Close"
     )
 
     ax1.plot(
-        data["Date"],
+        data.index,
         data["MA20"],
         label="MA20"
     )
 
     ax1.plot(
-        data["Date"],
+        data.index,
         data["MA50"],
         label="MA50"
     )
 
-    ax1.set_title(
-        f"{symbol} Price & Moving Averages"
+    ax1.axhline(
+        support,
+        linestyle="--",
+        label="Support"
     )
 
-    ax1.set_xlabel("Date")
-    ax1.set_ylabel("Price (₹)")
+    ax1.axhline(
+        resistance,
+        linestyle="--",
+        label="Resistance"
+    )
+
+    ax1.set_title(
+        f"{symbol} Price Analysis"
+    )
 
     ax1.legend()
+
     ax1.grid(True)
 
-    st.pyplot(fig1)
+    st.pyplot(
+        fig1,
+        clear_figure=True
+    )
 
-    plt.close(fig1)
-
-    # =====================================================
-    # TREND LINE
-    # =====================================================
+    # ========================================================
+    # ML PREDICTION VISUALIZATION
+    # ========================================================
 
     st.subheader(
-        "📈 Trend Line"
+        "🤖 Machine Learning Prediction"
     )
+
+    recent_data = data.tail(120)
 
     fig2, ax2 = plt.subplots(
-        figsize=(12, 5)
+        figsize=(14, 5)
     )
 
     ax2.plot(
-        data["Date"],
-        data["Close"],
-        label="Actual Price"
+        recent_data.index,
+        recent_data["Close"],
+        label="Historical Price"
     )
 
-    ax2.plot(
-        data["Date"],
-        data["Trend"],
-        label="Linear Trend",
-        linestyle="--"
+    last_date = data.index[-1]
+
+    next_date = (
+        last_date +
+        pd.Timedelta(days=1)
+    )
+
+    ax2.scatter(
+        next_date,
+        predicted_price,
+        s=100,
+        label="ML Prediction"
+    )
+
+    ax2.axhline(
+        predicted_price,
+        linestyle="--",
+        label="Predicted Price"
     )
 
     ax2.set_title(
-        f"{symbol} Price Trend"
+        f"Next-Day ML Prediction: ₹{predicted_price:,.2f}"
     )
 
-    ax2.set_xlabel("Date")
-    ax2.set_ylabel("Price (₹)")
-
     ax2.legend()
+
     ax2.grid(True)
 
-    st.pyplot(fig2)
+    st.pyplot(
+        fig2,
+        clear_figure=True
+    )
 
-    plt.close(fig2)
-
-    # =====================================================
+    # ========================================================
     # RSI
-    # =====================================================
+    # ========================================================
 
     st.subheader(
-        "🌀 Relative Strength Index (RSI)"
+        "🌀 RSI"
     )
 
     fig3, ax3 = plt.subplots(
-        figsize=(12, 3)
+        figsize=(14, 4)
     )
 
     ax3.plot(
-        data["Date"],
+        data.index,
         data["RSI"],
         label="RSI"
     )
@@ -499,17 +1155,19 @@ if symbol:
     ax3.axhline(
         70,
         linestyle="--",
-        label="Overbought 70"
+        label="Overbought"
     )
 
     ax3.axhline(
         30,
         linestyle="--",
-        label="Oversold 30"
+        label="Oversold"
     )
 
-    ax3.set_title(
-        "Relative Strength Index"
+    ax3.axhline(
+        50,
+        linestyle=":",
+        label="Midline"
     )
 
     ax3.set_ylim(
@@ -518,34 +1176,43 @@ if symbol:
     )
 
     ax3.legend()
+
     ax3.grid(True)
 
-    st.pyplot(fig3)
+    st.pyplot(
+        fig3,
+        clear_figure=True
+    )
 
-    plt.close(fig3)
-
-    # =====================================================
+    # ========================================================
     # MACD
-    # =====================================================
+    # ========================================================
 
     st.subheader(
         "📉 MACD"
     )
 
     fig4, ax4 = plt.subplots(
-        figsize=(12, 3)
+        figsize=(14, 4)
     )
 
     ax4.plot(
-        data["Date"],
+        data.index,
         data["MACD"],
         label="MACD"
     )
 
     ax4.plot(
-        data["Date"],
+        data.index,
         data["Signal"],
         label="Signal"
+    )
+
+    ax4.bar(
+        data.index,
+        data["MACD_Histogram"],
+        alpha=0.3,
+        label="Histogram"
     )
 
     ax4.axhline(
@@ -553,81 +1220,118 @@ if symbol:
         linestyle="--"
     )
 
-    ax4.set_title(
-        "MACD & Signal Line"
-    )
-
     ax4.legend()
+
     ax4.grid(True)
 
-    st.pyplot(fig4)
+    st.pyplot(
+        fig4,
+        clear_figure=True
+    )
 
-    plt.close(fig4)
-
-    # =====================================================
+    # ========================================================
     # BOLLINGER BANDS
-    # =====================================================
+    # ========================================================
 
     st.subheader(
         "📌 Bollinger Bands"
     )
 
+    recent_bb = data.tail(150)
+
     fig5, ax5 = plt.subplots(
-        figsize=(12, 5)
+        figsize=(14, 5)
     )
 
     ax5.plot(
-        data["Date"],
-        data["Close"],
+        recent_bb.index,
+        recent_bb["Close"],
         label="Close"
     )
 
     ax5.plot(
-        data["Date"],
-        data["BB_Middle"],
-        label="Middle Band"
+        recent_bb.index,
+        recent_bb["BB_Middle"],
+        label="Middle"
     )
 
     ax5.plot(
-        data["Date"],
-        data["BB_Upper"],
-        label="Upper Band",
-        linestyle="--"
+        recent_bb.index,
+        recent_bb["BB_Upper"],
+        linestyle="--",
+        label="Upper"
     )
 
     ax5.plot(
-        data["Date"],
-        data["BB_Lower"],
-        label="Lower Band",
-        linestyle="--"
+        recent_bb.index,
+        recent_bb["BB_Lower"],
+        linestyle="--",
+        label="Lower"
     )
 
-    ax5.set_title(
-        "Bollinger Bands"
+    ax5.fill_between(
+        recent_bb.index,
+        recent_bb["BB_Lower"].values,
+        recent_bb["BB_Upper"].values,
+        alpha=0.10
     )
 
     ax5.legend()
+
     ax5.grid(True)
 
-    st.pyplot(fig5)
+    st.pyplot(
+        fig5,
+        clear_figure=True
+    )
 
-    plt.close(fig5)
-
-    # =====================================================
-    # LATEST DATA TABLE
-    # =====================================================
+    # ========================================================
+    # MODEL INFORMATION
+    # ========================================================
 
     st.subheader(
-        "📋 Latest Market Data"
+        "🤖 Model Information"
+    )
+
+    m1, m2, m3 = st.columns(3)
+
+    with m1:
+
+        st.metric(
+            "Training Records",
+            f"{len(data):,}"
+        )
+
+    with m2:
+
+        st.metric(
+            "Random Forest Trees",
+            "200"
+        )
+
+    with m3:
+
+        st.metric(
+            "Prediction Uncertainty",
+            f"±₹{prediction_std:,.2f}"
+        )
+
+    st.info(
+        "The ML prediction is an estimate based on historical "
+        "price and technical-indicator patterns. It is not a "
+        "guarantee of future performance."
+    )
+
+    # ========================================================
+    # DATA TABLE
+    # ========================================================
+
+    st.subheader(
+        "📋 Recent Data"
     )
 
     display_columns = [
-        "Date",
-        "Open",
-        "High",
-        "Low",
         "Close",
-        "Volume",
         "MA20",
         "MA50",
         "RSI",
@@ -637,31 +1341,24 @@ if symbol:
         "BB_Lower"
     ]
 
-    available_columns = [
-        column
-        for column in display_columns
-        if column in data.columns
-    ]
-
     st.dataframe(
-        data[
-            available_columns
-        ].tail(20),
-        use_container_width=True,
-        hide_index=True
+        data[display_columns]
+        .tail(20)
+        .round(2),
+        use_container_width=True
     )
 
-    # =====================================================
-    # DOWNLOAD CSV
-    # =====================================================
+    # ========================================================
+    # DOWNLOAD
+    # ========================================================
 
     st.subheader(
-        "📁 Export Data"
+        "📁 Export Analysis"
     )
 
-    csv = data.to_csv(
-        index=False
-    ).encode("utf-8")
+    csv = data.to_csv().encode(
+        "utf-8"
+    )
 
     st.download_button(
         label="⬇️ Download CSV",
@@ -672,15 +1369,29 @@ if symbol:
         mime="text/csv"
     )
 
-    # =====================================================
-    # FOOTER
-    # =====================================================
+else:
 
-    st.success(
-        "Analysis completed successfully."
+    st.info(
+        "Enter a stock symbol in the sidebar "
+        "and click **Analyze Stock**."
     )
 
-    st.caption(
-        "⚠️ This tool provides technical analysis for "
-        "informational purposes only and is not financial advice."
+    st.markdown(
+        """
+        ### Example symbols
+
+        **NSE**
+        - RELIANCE
+        - TCS
+        - INFY
+        - HDFCBANK
+        - ICICIBANK
+        - SBIN
+        - TATAMOTORS
+        - MARUTI
+
+        **BSE**
+
+        Use the same symbol and select **BSE**.
+        """
     )
