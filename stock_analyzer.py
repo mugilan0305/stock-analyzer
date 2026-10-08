@@ -63,7 +63,7 @@ def calculate_rsi(series, period=14):
 def money(value):
     try:
         return f"₹{float(value):,.2f}"
-    except:
+    except Exception:
         return "N/A"
 
 def get_signal_badge(signal):
@@ -89,7 +89,7 @@ def fetch_fundamentals(ticker):
             "eps_g": info.get("earningsGrowth", 0) * 100 if info.get("earningsGrowth") else 0,
             "margin": info.get("profitMargins", 0) * 100 if info.get("profitMargins") else 0,
         }
-    except:
+    except Exception:
         return {"roe": 0, "de": 0, "pe": 0, "eps_g": 0, "margin": 0}
 
 # ============================================================
@@ -133,7 +133,7 @@ def run_ai_prediction(df):
     latest_X = scaler.transform(df[features].iloc[[-1]].fillna(0))
     pred_return = (gbr.predict(latest_X)[0] * 0.6) + (rf.predict(latest_X)[0] * 0.4)
     
-    predicted_price = close.iloc[-1] * (1 + pred_return)
+    predicted_price = float(close.iloc[-1]) * (1 + pred_return)
     confidence = max(50, 95 - abs(gbr.predict(latest_X)[0] - rf.predict(latest_X)[0]) * 1000)
     
     return {
@@ -151,8 +151,6 @@ data = fetch_market_data(WATCHLIST)
 if data.empty:
     st.error("Data feed interrupted. Please refresh.")
     st.stop()
-
-closes = data["Close"] if "Close" in data else data
 
 tabs = st.tabs(["⚡ AI Screener & Signals", "📈 Advanced Charting"])
 
@@ -227,7 +225,7 @@ with tabs[1]:
     
     ticker_ns = f"{selected_ticker}.NS"
     df_chart = data.xs(ticker_ns, axis=1, level=1) if isinstance(data.columns, pd.MultiIndex) else data
-    df_chart = df_chart.tail(200) # Last 200 days
+    df_chart = df_chart.tail(200).copy() # Last 200 days
     
     df_chart["SMA20"] = df_chart["Close"].rolling(20).mean()
     df_chart["SMA50"] = df_chart["Close"].rolling(50).mean()
@@ -239,4 +237,21 @@ with tabs[1]:
     
     # SMAs
     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA20'], line=dict(color='#f59e0b', width=1), name="20 SMA"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA50'], line=dict(color='#3b82f6', width=1), name="50 SMA"), row=1, col=1
+    
+    # Fixed the missing closing parenthesis here
+    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA50'], line=dict(color='#3b82f6', width=1), name="50 SMA"), row=1, col=1)
+    
+    # Volume
+    colors = ['#ef4444' if row['Open'] - row['Close'] >= 0 else '#10b981' for index, row in df_chart.iterrows()]
+    fig.add_trace(go.Bar(x=df_chart.index, y=df_chart['Volume'], marker_color=colors, name="Volume"), row=2, col=1)
+
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        height=650,
+        margin=dict(l=0, r=0, t=10, b=0),
+        xaxis_rangeslider_visible=False
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
