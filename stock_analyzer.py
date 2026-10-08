@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -83,13 +84,10 @@ def get_signal_badge(signal_text):
         return f'<span class="badge-avoid">{signal_text}</span>'
 
 def estimate_target_date(entry, target, atr):
-    """Calculates expected date to hit a target based on ATR momentum velocity."""
     try:
         if pd.isna(entry) or pd.isna(target) or pd.isna(atr) or atr <= 0 or entry == target:
             return "N/A"
-        # Assume the stock moves 40% of its ATR directionally per trading day on average
         trading_days = max(1, int(abs(target - entry) / (atr * 0.4)))
-        # Convert trading days to calendar days (multiply by approx 1.4)
         calendar_days = int(trading_days * 1.4)
         est_date = datetime.now(IST) + timedelta(days=calendar_days)
         return est_date.strftime("%d %b %y")
@@ -204,8 +202,7 @@ def evaluate_institutional_models(fund_data, tech_data):
     peg = fund_data.get("peg") or 99.0
     is_stage2 = tech_data.get("is_stage2", False)
 
-    s_growth, s_moat, s_garp, s_mom, s_value = 0, 0, 0, 0, 0
-    
+    s_growth = 0
     if roe >= 20: s_growth += 35
     elif roe >= 15: s_growth += 20
     if eps_g >= 18: s_growth += 35
@@ -213,6 +210,7 @@ def evaluate_institutional_models(fund_data, tech_data):
     if rev_g >= 15: s_growth += 20
     if is_stage2: s_growth += 10
 
+    s_moat = 0
     if de <= 0.2: s_moat += 40
     elif de <= 0.5: s_moat += 25
     elif de > 1.0: s_moat -= 20
@@ -220,17 +218,20 @@ def evaluate_institutional_models(fund_data, tech_data):
     elif margin >= 12: s_moat += 20
     if roe >= 18: s_moat += 25
 
+    s_garp = 0
     if roe >= 20: s_garp += 30
     if eps_g >= 15 and rev_g >= 12: s_garp += 30
     if 0 < peg <= 1.5: s_garp += 30
     elif 1.5 < peg <= 2.2: s_garp += 15
     if is_stage2: s_garp += 10
 
+    s_mom = 0
     if eps_g >= 22: s_mom += 40
     elif eps_g >= 12: s_mom += 20
     if de <= 0.6: s_mom += 25
     if is_stage2: s_mom += 35
 
+    s_value = 0
     if 0 < pe <= 25: s_value += 40
     elif 25 < pe <= 35: s_value += 20
     if de <= 0.3: s_value += 30
@@ -246,8 +247,12 @@ def evaluate_institutional_models(fund_data, tech_data):
     composite = round((0.25 * s_growth) + (0.25 * s_moat) + (0.20 * s_garp) + (0.15 * s_mom) + (0.15 * s_value), 1)
 
     return {
-        "Composite": composite, "Growth_Scale": s_growth, "Fortress_Moat": s_moat,
-        "GARP": s_garp, "Momentum": s_mom, "Deep_Value": s_value
+        "Composite": composite,
+        "Growth_Scale": s_growth,
+        "Fortress_Moat": s_moat,
+        "GARP": s_garp,
+        "Momentum": s_mom,
+        "Deep_Value": s_value
     }
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -324,6 +329,22 @@ def run_advanced_ai_model(df_stock):
 # ============================================================
 
 st.sidebar.title("🏛️ Terminal Navigation")
+
+# FIX: Use components.html instead of markdown for JS execution in Streamlit
+clock_html = """
+<div style="background:#0f2e1b; border:1px solid #10b981; border-radius:8px; padding:12px; text-align:center; font-family: sans-serif; color: white;">
+    <div style="font-size:11px; color:#34d399; font-weight:700; margin-bottom:4px; letter-spacing:1px;">LIVE MARKET CLOCK (IST)</div>
+    <div id="live-clock" style="font-size:18px; font-family:monospace; font-weight:bold;">Loading...</div>
+</div>
+<script>
+    setInterval(() => {
+        let options = { timeZone: 'Asia/Kolkata', hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' };
+        document.getElementById('live-clock').innerText = new Date().toLocaleTimeString('en-IN', options);
+    }, 1000);
+</script>
+"""
+with st.sidebar:
+    components.html(clock_html, height=80)
 
 nav_mode = st.sidebar.radio(
     "Select Operating View",
@@ -570,136 +591,4 @@ elif nav_mode == "⚡ 5-Second Real-Time Pulse & AI":
             st.caption("No recent news found for this stock.")
 
 
-# ============================================================
-# VIEW 3: SINGLE STOCK TARGET DIAGNOSIS
-# ============================================================
-elif nav_mode == "🔍 Single Stock Target Diagnosis":
-    st.title("🔍 Tactical Setup & Graphical Entry/Exit Radar")
-    
-    col_a, col_b = st.columns([3, 1])
-    with col_a:
-        selected_sym = st.selectbox("Select NSE Security", [s.replace(".NS", "") for s in WATCHLIST])
-    with col_b:
-        start_date = st.date_input("Chart Start Date", datetime.now() - timedelta(days=180))
-        
-    ticker_sym = f"{selected_sym}.NS"
-    raw_df = get_stock_df(bulk_data, ticker_sym)
-    
-    c = raw_df.get("Close", pd.Series(dtype=float)).dropna()
-    h = raw_df.get("High", c).dropna()
-    l = raw_df.get("Low", c).dropna()
-    
-    if len(c) > 20:
-        cmp = float(c.iloc[-1])
-        sma200 = float(c.rolling(200).mean().iloc[-1]) if len(c) >= 200 else cmp
-        pivot_20d = float(h.iloc[-21:-1].max()) if len(h) >= 21 else cmp
-        dist_pivot = ((cmp - pivot_20d) / pivot_20d) * 100 if pivot_20d > 0 else 0
-        
-        tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
-        atr14 = float(tr.rolling(14).mean().iloc[-1]) if len(tr) >= 14 else (cmp * 0.02)
-        
-        entry = pivot_20d
-        
-        if cmp >= pivot_20d and dist_pivot <= 3.5 and cmp > sma200:
-            status_text = "BUY (Breakout Confirmed)"
-            entry = cmp
-        elif -4.5 <= dist_pivot <= 0.5 and cmp > sma200:
-            status_text = "WATCH (VCP Tightening)"
-            entry = round(pivot_20d * 1.002, 2)
-        elif cmp < sma200:
-            status_text = "SELL (Downtrend Structure)"
-        else:
-            status_text = "AVOID (Extended or Choppy)"
-    
-        stop = round(max(entry * 0.94, entry - (1.4 * atr14)), 2)
-        risk = entry - stop
-        target_1 = round(entry + (1.0 * risk), 2)
-        target_2 = round(entry + (2.0 * risk), 2)
-        target_3 = round(entry + (3.0 * risk), 2)
-        
-        t1_date = estimate_target_date(entry, target_1, atr14)
-        t2_date = estimate_target_date(entry, target_2, atr14)
-        t3_date = estimate_target_date(entry, target_3, atr14)
-    
-        ai_res = run_advanced_ai_model(raw_df)
-        accuracy_text = f"{ai_res['confidence']}%" if ai_res else "N/A"
-    
-        st.markdown(f"### Technical Signal: {get_signal_badge(status_text)} &nbsp;|&nbsp; AI Prediction Accuracy: <span style='color:#fbbf24'>{accuracy_text}</span>", unsafe_allow_html=True)
-    
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Optimal Entry", money(entry))
-        c2.metric("Hard Stop Loss", money(stop), "-Risk Managed")
-        c3.metric(f"Target 1 • {t1_date}", money(target_1), "+1.0R Reward")
-        c4.metric(f"Target 2 • {t2_date}", money(target_2), "+2.0R Reward")
-        c5.metric(f"Target 3 • {t3_date}", money(target_3), "+3.0R Reward")
-        
-        st.markdown("---")
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            chart_df = pd.DataFrame({
-                "Open": raw_df.get("Open", c).dropna(),
-                "High": h,
-                "Low": l,
-                "Close": c,
-                "50 SMA": c.rolling(50).mean(),
-                "200 SMA": c.rolling(200).mean()
-            })
-            
-            chart_df = chart_df[chart_df.index.tz_localize(None) >= pd.to_datetime(start_date)]
-            
-            fig = go.Figure()
-            
-            fig.add_trace(go.Candlestick(x=chart_df.index,
-                                         open=chart_df['Open'],
-                                         high=chart_df['High'],
-                                         low=chart_df['Low'],
-                                         close=chart_df['Close'],
-                                         name='Price Action'))
-                                         
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["50 SMA"], mode='lines', name='50 SMA', line=dict(color='#a78bfa', width=1.5, dash='dot')))
-            fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["200 SMA"], mode='lines', name='200 SMA', line=dict(color='#f472b6', width=1.5, dash='dot')))
-            
-            if "BUY" in status_text or "WATCH" in status_text:
-                fig.add_hline(y=entry, line_dash="solid", line_color="#fbbf24", line_width=2, annotation_text=f"ENTRY: ₹{entry:.2f}", annotation_position="top left", annotation_font_color="#fbbf24")
-                fig.add_hline(y=target_1, line_dash="dash", line_color="#a7f3d0", line_width=1.5, annotation_text=f"T1: ₹{target_1:.2f} ({t1_date})", annotation_position="bottom right", annotation_font_color="#a7f3d0")
-                fig.add_hline(y=target_2, line_dash="dash", line_color="#34d399", line_width=1.5, annotation_text=f"T2: ₹{target_2:.2f} ({t2_date})", annotation_position="bottom right", annotation_font_color="#34d399")
-                fig.add_hline(y=target_3, line_dash="dash", line_color="#059669", line_width=2, annotation_text=f"T3: ₹{target_3:.2f} ({t3_date})", annotation_position="bottom right", annotation_font_color="#059669")
-                fig.add_hline(y=stop, line_dash="dash", line_color="#f87171", line_width=2, annotation_text=f"STOP LOSS: ₹{stop:.2f}", annotation_position="top right", annotation_font_color="#f87171")
-                
-                fig.add_hrect(y0=entry, y1=target_3, fillcolor="rgba(52, 211, 153, 0.1)", layer="below", line_width=0)
-                fig.add_hrect(y0=stop, y1=entry, fillcolor="rgba(248, 113, 113, 0.1)", layer="below", line_width=0)
-    
-            fig.update_layout(
-                template="plotly_dark",
-                plot_bgcolor="rgba(15, 23, 42, 1)",
-                paper_bgcolor="rgba(15, 23, 42, 1)",
-                margin=dict(l=20, r=20, t=40, b=20),
-                height=450,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                xaxis_title="Date",
-                yaxis_title="Price (INR)",
-                xaxis_rangeslider_visible=False
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            if "BUY" in status_text or "WATCH" in status_text:
-                st.caption("🟢 **Green Zone:** Expected Profit Trajectory (Up to T3) | 🔴 **Red Zone:** Max Risk Tolerance Buffer")
-                
-        with col2:
-            st.subheader("📰 Recent News & Catalysts")
-            news_items = get_news(selected_sym)
-            if news_items:
-                for item in news_items[:5]:
-                    st.markdown(f"""
-                    <div class="news-box">
-                        <div style="font-weight:700; font-size:13px; color:#f8fafc;">{item['title']}</div>
-                        <div style="font-size:11px; color:#94a3b8; margin-top:4px;">{item['date']}</div>
-                        <a href="{item['link']}" target="_blank" style="color:#38bdf8; font-size:12px; font-weight:600; text-decoration:none;">Read full article →</a>
-                    </div>
-                    """, unsafe_allow_html=True)
-            else:
-                st.caption("No recent news found for this stock.")
-    else:
-        st.error("Not enough historical data available to generate charting signals for this stock.")
+# =
