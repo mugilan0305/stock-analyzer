@@ -22,6 +22,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Custom CSS for Sleek Dark Mode UI
 st.markdown("""
 <style>
     .stApp { background-color: #080c14; color: #cbd5e1; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -87,7 +88,6 @@ def compute_indicators(df):
     low = df["Low"] if "Low" in df.columns else close
     vol = df["Volume"]
 
-    # Trend Moving Averages
     df["SMA20"] = close.rolling(20).mean()
     df["SMA50"] = close.rolling(50).mean()
     df["SMA200"] = close.rolling(200).mean()
@@ -96,21 +96,18 @@ def compute_indicators(df):
     df["MACD"] = df["EMA12"] - df["EMA26"]
     df["MACD_SIGNAL"] = df["MACD"].ewm(span=9, adjust=False).mean()
 
-    # Wilder's RSI (14)
     delta = close.diff()
     gain = (delta.where(delta > 0, 0.0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
     rs = gain / loss.replace(0, 1e-9)
     df["RSI14"] = 100 - (100 / (1 + rs))
 
-    # Average True Range (14)
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     df["TR"] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["ATR14"] = df["TR"].rolling(14).mean()
 
-    # Relative Volume (Z-Score)
     vol_mean = vol.rolling(20).mean()
     vol_std = vol.rolling(20).std().replace(0, 1e-9)
     df["VOL_Z"] = (vol - vol_mean) / vol_std
@@ -118,9 +115,9 @@ def compute_indicators(df):
     return df
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_bulk_market_data(tickers):
+def fetch_bulk_market_data(tickers, start_date, end_date):
     try:
-        return yf.download(tickers, period="2y", interval="1d", auto_adjust=True, progress=False)
+        return yf.download(tickers, start=start_date, end=end_date, interval="1d", auto_adjust=True, progress=False)
     except Exception:
         return pd.DataFrame()
 
@@ -142,24 +139,18 @@ def fetch_fundamental_matrix(ticker):
 # QUANTITATIVE AI & RISK ENGINE
 # ============================================================
 def train_predict_ensemble(df):
-    """
-    Fits dual non-linear regressors (Gradient Boosting + Random Forest) on
-    multi-factor features using time-series train-validation split.
-    """
     if len(df) < 120:
         return None
 
     features = ["RET_1", "RET_5", "RSI14", "DIST_SMA50", "DIST_SMA200", "VOL_Z", "MACD_RATIO"]
     df_feat = df.copy()
-
     close = df_feat["Close"]
+    
     df_feat["RET_1"] = close.pct_change(1)
     df_feat["RET_5"] = close.pct_change(5)
     df_feat["DIST_SMA50"] = (close - df_feat["SMA50"]) / df_feat["SMA50"].replace(0, np.nan)
     df_feat["DIST_SMA200"] = (close - df_feat["SMA200"]) / df_feat["SMA200"].replace(0, np.nan)
     df_feat["MACD_RATIO"] = df_feat["MACD"] / close.replace(0, np.nan)
-    
-    # Target: 5-Day forward log return
     df_feat["TARGET_5D"] = (close.shift(-5) / close.replace(0, np.nan)) - 1
 
     clean = df_feat.dropna(subset=features + ["TARGET_5D"]).copy()
@@ -169,7 +160,6 @@ def train_predict_ensemble(df):
     X = clean[features]
     y = clean["TARGET_5D"]
 
-    # 80/20 Time-Series Split (preserving sequential order)
     split_idx = int(len(clean) * 0.8)
     X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_val = y.iloc[:split_idx], y.iloc[split_idx:]
@@ -178,31 +168,26 @@ def train_predict_ensemble(df):
     X_train_scaled = scaler.fit_transform(X_train)
     X_val_scaled = scaler.transform(X_val)
 
-    # Models
     gbr = GradientBoostingRegressor(n_estimators=80, learning_rate=0.03, max_depth=3, random_state=42)
     rf = RandomForestRegressor(n_estimators=80, max_depth=4, random_state=42, n_jobs=-1)
 
     gbr.fit(X_train_scaled, y_train)
     rf.fit(X_train_scaled, y_train)
 
-    # Validation Directional Accuracy Check
     val_pred = (0.6 * gbr.predict(X_val_scaled)) + (0.4 * rf.predict(X_val_scaled))
     dir_acc = (np.sign(val_pred) == np.sign(y_val)).mean() * 100
 
-    # Prediction on current latest bar
     latest_bar = scaler.transform(df_feat[features].iloc[[-1]].ffill().fillna(0))
     expected_return = (0.6 * gbr.predict(latest_bar)[0]) + (0.4 * rf.predict(latest_bar)[0])
 
     cmp = float(close.iloc[-1])
     atr = float(df_feat["ATR14"].iloc[-1]) if pd.notna(df_feat["ATR14"].iloc[-1]) else cmp * 0.02
 
-    # Volatility-grounded trade parameters (1.5x ATR Risk, 1:2 R:R Ratio)
     stop_loss = round(cmp - (1.5 * atr), 2)
     risk_unit = cmp - stop_loss
     target_1 = round(cmp + (1.5 * risk_unit), 2)
     target_2 = round(cmp + (3.0 * risk_unit), 2)
 
-    # Velocity-adjusted estimated trading days to achieve Target 1
     est_trading_days = max(3, int(risk_unit / max(0.4 * atr, 1e-3)))
     cal_days = int(est_trading_days * 1.45)
     est_target_date = (datetime.now(IST) + timedelta(days=cal_days)).strftime("%d %b %Y")
@@ -221,10 +206,28 @@ def train_predict_ensemble(df):
     }
 
 # ============================================================
-# SIDEBAR NAVIGATION & WATCHLIST SELECTION
+# SIDEBAR NAVIGATION & CONTROLS
 # ============================================================
 st.sidebar.markdown("### 🏛️ AlphaDesk Controls")
-custom_input = st.sidebar.text_input("Add NSE Ticker (e.g. TRENT, BEL, COALINDIA)", "")
+
+# Date range selection
+default_start = datetime.now(IST) - timedelta(days=730)
+default_end = datetime.now(IST)
+
+date_range = st.sidebar.date_input(
+    "Analysis Horizon",
+    value=(default_start, default_end),
+    max_value=default_end
+)
+
+if len(date_range) == 2:
+    start_date, end_date = date_range
+else:
+    start_date, end_date = default_start, default_end
+
+st.sidebar.divider()
+
+custom_input = st.sidebar.text_input("Add NSE Ticker (e.g. TRENT, BEL)", "")
 active_watchlist = DEFAULT_WATCHLIST.copy()
 
 if custom_input:
@@ -237,7 +240,7 @@ if custom_input:
 selected_sector = st.sidebar.selectbox("Display Filter", ["All Equities", "Buy Signals Only", "High Conviction (>55%)"])
 
 with st.spinner("Streaming institutional feeds..."):
-    market_matrix = fetch_bulk_market_data(active_watchlist)
+    market_matrix = fetch_bulk_market_data(active_watchlist, start_date, end_date)
 
 if market_matrix.empty:
     st.error("Market data feeds are temporarily unreachable. Please verify network connectivity.")
@@ -263,7 +266,6 @@ for ticker in active_watchlist:
 
     fund = fetch_fundamental_matrix(ticker)
 
-    # Multi-factor signal confirmation
     is_stage2 = (
         ind_df["Close"].iloc[-1] > ind_df["SMA50"].iloc[-1] > ind_df["SMA200"].iloc[-1]
     )
@@ -301,7 +303,6 @@ tabs = st.tabs(["⚡ Institutional Consensus & Targets", "📊 Deep Technical & 
 
 with tabs[0]:
     if not screener_df.empty:
-        # Filter Logic
         display_df = screener_df.copy()
         if selected_sector == "Buy Signals Only":
             display_df = display_df[display_df["Signal"] == "BUY"]
@@ -310,7 +311,6 @@ with tabs[0]:
 
         display_df = display_df.sort_values(by="Expected Return", ascending=False).reset_index(drop=True)
 
-        # Top Conviction Card
         if not display_df.empty and display_df.iloc[0]["Signal"] == "BUY":
             top = display_df.iloc[0]
             st.markdown(f"""
@@ -335,13 +335,16 @@ with tabs[0]:
             </div>
             """, unsafe_allow_html=True)
 
-        st.markdown("### Algorithmic Action Matrix")
+        col1, col2 = st.columns([0.8, 0.2])
+        with col1:
+            st.markdown("### Algorithmic Action Matrix")
+        with col2:
+            csv = display_df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Export Matrix (CSV)", csv, "alpha_matrix.csv", "text/csv", use_container_width=True)
 
         def style_signal(val):
-            if val == "BUY":
-                return "color: #34d399; font-weight: bold;"
-            elif val == "SELL":
-                return "color: #f87171; font-weight: bold;"
+            if val == "BUY": return "color: #34d399; font-weight: bold;"
+            elif val == "SELL": return "color: #f87171; font-weight: bold;"
             return "color: #fbbf24; font-weight: bold;"
 
         st.dataframe(
@@ -366,47 +369,49 @@ with tabs[0]:
 
 with tabs[1]:
     st.markdown("### Multi-Pane Institutional Execution Chart")
-    chart_ticker = st.selectbox("Select Asset for Deep Audit", list(computed_dfs.keys()), format_func=lambda x: x.replace(".NS", ""))
     
-    chart_df = computed_dfs[chart_ticker].tail(180).copy()
+    col1, col2 = st.columns([0.7, 0.3])
+    with col1:
+        chart_ticker = st.selectbox("Select Asset for Deep Audit", list(computed_dfs.keys()), format_func=lambda x: x.replace(".NS", ""))
+    with col2:
+        lookback = st.slider("Lookback Period (Days)", min_value=30, max_value=365, value=180, step=30)
+    
+    if chart_ticker in computed_dfs:
+        chart_df = computed_dfs[chart_ticker].tail(lookback).copy()
 
-    # Create 3-Row Multiplot (Candles, Volume, RSI/MACD)
-    fig = make_subplots(
-        rows=3, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.6, 0.2, 0.2]
-    )
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.03,
+            row_heights=[0.6, 0.2, 0.2]
+        )
 
-    # 1. Price + Overlays
-    fig.add_trace(go.Candlestick(
-        x=chart_df.index,
-        open=chart_df["Open"], high=chart_df["High"],
-        low=chart_df["Low"], close=chart_df["Close"],
-        name="Price",
-        increasing_line_color="#10b981", decreasing_line_color="#ef4444"
-    ), row=1, col=1)
+        fig.add_trace(go.Candlestick(
+            x=chart_df.index,
+            open=chart_df["Open"], high=chart_df["High"],
+            low=chart_df["Low"], close=chart_df["Close"],
+            name="Price",
+            increasing_line_color="#10b981", decreasing_line_color="#ef4444"
+        ), row=1, col=1)
 
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["SMA20"], line=dict(color="#f59e0b", width=1.2), name="SMA 20"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["SMA50"], line=dict(color="#3b82f6", width=1.2), name="SMA 50"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["SMA200"], line=dict(color="#a855f7", width=1.5), name="SMA 200"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["SMA20"], line=dict(color="#f59e0b", width=1.2), name="SMA 20"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["SMA50"], line=dict(color="#3b82f6", width=1.2), name="SMA 50"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["SMA200"], line=dict(color="#a855f7", width=1.5), name="SMA 200"), row=1, col=1)
 
-    # 2. Volume Profile
-    vol_colors = ["#ef4444" if row["Open"] > row["Close"] else "#10b981" for _, row in chart_df.iterrows()]
-    fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["Volume"], marker_color=vol_colors, name="Volume"), row=2, col=1)
+        vol_colors = ["#ef4444" if row["Open"] > row["Close"] else "#10b981" for _, row in chart_df.iterrows()]
+        fig.add_trace(go.Bar(x=chart_df.index, y=chart_df["Volume"], marker_color=vol_colors, name="Volume"), row=2, col=1)
 
-    # 3. MACD
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["MACD"], line=dict(color="#38bdf8", width=1.2), name="MACD"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["MACD_SIGNAL"], line=dict(color="#f97316", width=1.2), name="Signal"), row=3, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["MACD"], line=dict(color="#38bdf8", width=1.2), name="MACD"), row=3, col=1)
+        fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["MACD_SIGNAL"], line=dict(color="#f97316", width=1.2), name="Signal"), row=3, col=1)
 
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#080c14",
-        plot_bgcolor="#080c14",
-        height=720,
-        margin=dict(l=10, r=10, t=10, b=10),
-        xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="#080c14",
+            plot_bgcolor="#080c14",
+            height=720,
+            margin=dict(l=10, r=10, t=10, b=10),
+            xaxis_rangeslider_visible=False,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
 
-    st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
