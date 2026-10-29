@@ -59,8 +59,8 @@ IST = ZoneInfo("Asia/Kolkata")
 
 DEFAULT_WATCHLIST = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "BHARTIARTL.NS",
-    "INFY.NS", "ITC.NS", "SBIN.NS", "LT.NS", "BAJFINANCE.NS", "HAL.NS",
-    "TRENT.NS", "TATAMOTORS.NS", "ZOMATO.NS", "BSE.NS"
+    "INFY.NS", "ITC.NS", "SBIN.NS", "LT.NS", "BAJFINANCE.NS",
+    "GOLDBEES.NS", "SILVERBEES.NS", "GC=F", "SI=F" # Added Gold/Silver (NSE ETFs + Global Futures)
 ]
 
 # ============================================================
@@ -210,7 +210,6 @@ def train_predict_ensemble(df):
 # ============================================================
 st.sidebar.markdown("### 🏛️ AlphaDesk Controls")
 
-# Date range selection
 default_start = datetime.now(IST) - timedelta(days=730)
 default_end = datetime.now(IST)
 
@@ -227,17 +226,18 @@ else:
 
 st.sidebar.divider()
 
-custom_input = st.sidebar.text_input("Add NSE Ticker (e.g. TRENT, BEL)", "")
+custom_input = st.sidebar.text_input("Add Ticker (e.g. TRENT, GC=F)", "")
 active_watchlist = DEFAULT_WATCHLIST.copy()
 
 if custom_input:
     clean_sym = custom_input.strip().upper()
-    if not clean_sym.endswith(".NS"):
+    # Smart append: Don't append .NS if it's a global futures/crypto ticker
+    if not any(char in clean_sym for char in [".", "=", "-", "^"]):
         clean_sym += ".NS"
     if clean_sym not in active_watchlist:
         active_watchlist.append(clean_sym)
 
-selected_sector = st.sidebar.selectbox("Display Filter", ["All Equities", "Buy Signals Only", "High Conviction (>55%)"])
+selected_sector = st.sidebar.selectbox("Display Filter", ["All Assets", "Buy Signals Only", "High Conviction (>55%)"])
 
 with st.spinner("Streaming institutional feeds..."):
     market_matrix = fetch_bulk_market_data(active_watchlist, start_date, end_date)
@@ -326,10 +326,10 @@ with tabs[0]:
                     </div>
                 </div>
                 <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin-top: 20px;">
-                    <div class="metric-panel"><div class="metric-panel-title">Entry Level</div><div class="metric-panel-value">₹{top['CMP']:,.2f}</div></div>
-                    <div class="metric-panel"><div class="metric-panel-title">Stop Loss</div><div class="metric-panel-value" style="color: #f87171;">₹{top['Stop Loss']:,.2f}</div></div>
-                    <div class="metric-panel"><div class="metric-panel-title">Target 1 (Base)</div><div class="metric-panel-value" style="color: #38bdf8;">₹{top['Target 1']:,.2f}</div></div>
-                    <div class="metric-panel"><div class="metric-panel-title">Target 2 (Extended)</div><div class="metric-panel-value" style="color: #34d399;">₹{top['Target 2']:,.2f}</div></div>
+                    <div class="metric-panel"><div class="metric-panel-title">Entry Level</div><div class="metric-panel-value">{top['CMP']:,.2f}</div></div>
+                    <div class="metric-panel"><div class="metric-panel-title">Stop Loss</div><div class="metric-panel-value" style="color: #f87171;">{top['Stop Loss']:,.2f}</div></div>
+                    <div class="metric-panel"><div class="metric-panel-title">Target 1 (Base)</div><div class="metric-panel-value" style="color: #38bdf8;">{top['Target 1']:,.2f}</div></div>
+                    <div class="metric-panel"><div class="metric-panel-title">Target 2 (Extended)</div><div class="metric-panel-value" style="color: #34d399;">{top['Target 2']:,.2f}</div></div>
                     <div class="metric-panel"><div class="metric-panel-title">Est. Target Date</div><div class="metric-panel-value" style="font-size: 16px; margin-top: 4px;">{top['Est. Horizon']}</div></div>
                 </div>
             </div>
@@ -354,11 +354,11 @@ with tabs[0]:
                 "Directional Acc", "ROE %", "P/E"
             ]].style.map(style_signal, subset=["Signal"]),
             column_config={
-                "CMP": st.column_config.NumberColumn(format="₹%.2f"),
+                "CMP": st.column_config.NumberColumn(format="%.2f"),
                 "Expected Return": st.column_config.NumberColumn(format="%+.2f%%"),
-                "Stop Loss": st.column_config.NumberColumn(format="₹%.2f"),
-                "Target 1": st.column_config.NumberColumn(format="₹%.2f"),
-                "Target 2": st.column_config.NumberColumn(format="₹%.2f"),
+                "Stop Loss": st.column_config.NumberColumn(format="%.2f"),
+                "Target 1": st.column_config.NumberColumn(format="%.2f"),
+                "Target 2": st.column_config.NumberColumn(format="%.2f"),
                 "Directional Acc": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
                 "ROE %": st.column_config.NumberColumn(format="%.1f%%"),
                 "P/E": st.column_config.NumberColumn(format="%.1f")
